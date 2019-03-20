@@ -1,0 +1,174 @@
+----------------------------------------------
+死锁：
+ 获得锁
+   执行程序逻辑
+ 释放锁
+在执行程序逻辑里面出现了异常，代码直接退出了，导致没有执行释放锁，就会导致死锁
+---------------------------------------------
+
+thread.join()
+ 例如1：
+    producer.start()
+    consumer.start()
+
+    producer.join()
+    consumer.join()
+这种写法就是线程producer,consumer交替运行
+
+ 例如2：
+    producer.start()
+    producer.join()
+    consumer.start()
+    consumer.join()
+这种写法就是要等producer线程运行完了，才会运行consumer.start()
+
+ 例如3：
+  consumer.join()   #里面的timeout默认为0，表示要一直等待consumer线程执行完，才会去执行接下来的线程
+  consumer.join(2)  #里面有一个timeout时间2s，consumer线程只让执行2秒，如果2s后还有运行完，也要退出当前环境去执行接下来的动作
+
+join()函数的部分源码
+        self.__block.acquire()  #请求锁
+        try:
+            if timeout is None:   #没有设置超时
+                while not self.__stopped:
+                    self.__block.wait()  #一直等待下去，用的是Condition.wait()
+                if __debug__:
+                    self._note("%s.join(): thread stopped", self)
+            else:   #设置了超时时间
+                deadline = _time() + timeout
+                while not self.__stopped:
+                    delay = deadline - _time()
+                    if delay <= 0:
+                        if __debug__:
+                            self._note("%s.join(): timed out", self)
+                        break
+                    self.__block.wait(delay, balancing)   #在delay的期限内等待，里面每500us执行一次判断是否到了delay时间，到了则跳出wait()
+                else:
+                    if __debug__:
+                        self._note("%s.join(): thread stopped", self)
+        finally:
+            self.__block.release()
+           
+ ------------------------------------------------------------------------
+ 
+ 线程的条件（thread.Condition）
+ 里面是对Lock或者RLock的封装；
+ 是一个类对象；
+ 提供的方法有acquire(),release(),notify(),notifyAll(),wait()；
+ acquire(),release()就是lock里面的对象；
+ c.notify()  #唤醒一个等待c的线程；
+ c.notifyAll()   #唤醒所有等待c的线程；
+ 这两个notify并不会导致线程释放锁，通常会紧接着调用release()来释放锁；
+ c.wait(timeout=None)  #wait最大的特点就是调用wait()的线程必须已经acquire()了c，然后调用wait()，此时线程在这里阻塞，等待notify的通知
+
+wait的源代码：
+        if not self._is_owned():
+            raise RuntimeError("cannot wait on un-acquired lock")
+        waiter = _allocate_lock()
+        waiter.acquire()    #获取锁
+        self.__waiters.append(waiter)
+        saved_state = self._release_save()
+        try:    # restore state no matter what (e.g., KeyboardInterrupt)
+            if timeout is None:
+                waiter.acquire()   #再次请求锁
+                if __debug__:
+                    self._note("%s.wait(): got it", self)
+            else:
+                # Balancing act:  We can't afford a pure busy loop, so we
+                # have to sleep; but if we sleep the whole timeout time,
+                # we'll be unresponsive.  The scheme here sleeps very
+                # little at first, longer as time goes on, but never longer
+                # than 20 times per second (or the timeout time remaining).
+                endtime = _time() + timeout
+                delay = 0.0005 # 500 us -> initial delay of 1 ms
+                while True:
+                    gotit = waiter.acquire(0)
+                    if gotit:
+                        break
+                    remaining = min(endtime - _time(), timeout)
+                    if remaining <= 0:
+                        break
+                    if balancing:
+                        delay = min(delay * 2, remaining, 0.05)
+                    else:
+                        delay = remaining
+                        endtime = _time() + remaining
+                    _sleep(delay)
+                if not gotit:
+                    if __debug__:
+                        self._note("%s.wait(%s): timed out", self, timeout)
+                    try:
+                        self.__waiters.remove(waiter)
+                    except ValueError:
+                        pass
+                else:
+                    if __debug__:
+                        self._note("%s.wait(%s): got it", self, timeout)
+        finally:
+            self._acquire_restore(saved_state)
+
+声明一个condition对象： con = threading.Condition() #如果没有给参数，默认是使用RLock
+------------------------------------------------------------------------------------------
+
+2. RLock 可重入锁
+
+2.1 RLock对象的创建
+　　RLock是可重入锁，提供和lock对象相同的方法，可重入锁的特点是:
+    　　记录锁住自己的线程 t ，这样 t 可以多次调用 acquire() 方法而不会被阻塞，比如 t 可以多次声明自己对某个资源的需求。
+    　　可重入锁必须由锁住自己的线程释放（rl.release()）
+    　　rlock内部有一个计数器，只有锁住自己的线程 t 调用的 release() 方法和之前调用 acquire() 方法的次数相同时，才会真正解锁一个rlock。
+
+　　通过：
+1
+>>> rl = threading.RLock()
+
+　　可以创建一个可重入锁。
+
+2.2 rlock对象的方法
+
+　　rlock()对象提供和Lock对象相同的acquire()和release()方法。
+  -----------------------------------------------------------------------------------------------
+  
+  4 Event 事件
+4.1 Event 对象的创建
+　　Event对象可以让任何数量的线程暂停和等待，event 对象对应一个 True 或 False 的状态（flag），刚创建的event对象的状态为False。通过实例化Event类来获得一个event对象：
+1
+e = threading.Event()
+　　刚创建的event对象 e，它的状态为 False。
+
+4.2 Event 对象的方法
+
+e.clear()
+　　将 e 的状态设置为 False
+
+e.set()
+　　将 e 的状态设置为 True。
+　　此时所有等待 e 的线程都被唤醒进入就绪状态。
+	
+e.is_set()
+　　返回 e 的 状态——True 或 False。
+
+e.wait(timeout=None)
+　　如果 e 的状态为True，wait()立即返回True，否则线程会阻塞直到超时或者其他的线程调用了e.set()。
+-------------------------------------------------------------------------------------------
+ 
+
+5. Semaphore 信号量
+
+5.1 Semaphore 对象的创建
+　　信号量无疑是线程同步中最常用的技术了，信号量是一类通用的锁，锁的状态通常就是真或假，但是信号量有一个初始值，这个值往往反映了固定的资源量。
+　　通过调用：
+s = threading.Semaphore(n=1)
+　　创建一个Python信号量对象，参数 n 指定了信号量的初值。
+
+5.2 Semaphore对象的方法
+
+s.acquire(wait=True)
+    当 s 的值 > 0 时，acquire() 会将它的值减 1，同时返回 True。
+    当 s 的值 = 0 时，需要根据参数 wait 的值进行判断：如果wait为True，acquire() 会阻塞调用它的线程，直到有其他的线程调用 release() 为止；如果wait为False，acquire() 会立即返回False，告诉调用自己的线程，当前没有可用的资源。
+
+s.release()
+    当 s 的值 > 0 时，release()会直接将 s 的值加一；
+    当 s 的值 = 0 时而当前没有其他等待的线程时，release() 也会将 s 的值加一；
+    当 s 的值 = 0 时而当前有其他等待的线程时，release() 不改变 s 的值（还是0），唤醒任意一个等待信号量的线程；调用release()的线程继续正常执行。
+
